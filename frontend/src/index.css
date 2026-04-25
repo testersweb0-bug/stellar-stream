@@ -963,4 +963,88 @@ td {
 .app-nav-link--active {
   color: #0ea5a5;
   border-bottom-color: #0ea5a5;
-}
+}
+
+
+/* ── Bulk Action Bar (Floating) ────────────────────────── */
+
+.bulk-action-bar {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  animation: bulk-action-slide-up 0.3s ease-out;
+}
+
+@keyframes bulk-action-slide-up {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.bulk-action-bar__content {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: #111827;
+  color: white;
+  border-radius: 12px;
+  padding: 0.85rem 1.25rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  min-width: 320px;
+}
+
+.bulk-action-bar__count {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #e5e7eb;
+}
+
+.bulk-action-bar__button {
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.bulk-action-bar__button:hover:not(:disabled) {
+  background: #b91c1c;
+  transform: translateY(-1px);
+}
+
+.bulk-action-bar__button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.bulk-action-bar__button:disabled {
+  background: #6b7280;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+@media (max-width: 768px) {
+  .bulk-action-bar {
+    bottom: 1rem;
+    left: 1rem;
+    right: 1rem;
+    transform: none;
+  }
+
+  .bulk-action-bar__content {
+    min-width: auto;
+    width: 100%;
+    justify-content: space-between;
+  }
+}

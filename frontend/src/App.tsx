@@ -114,6 +114,15 @@ function App() {
     }
   }
 
+  async function handleRefresh(): Promise<void> {
+    try {
+      const data = await listStreams(filters);
+      setStreams(data);
+    } catch (err) {
+      console.error("Failed to refresh streams:", err);
+    }
+  }
+
   async function handleUpdateStartTime(
     streamId: string,
     newStartAt: number,
@@ -211,6 +220,7 @@ function App() {
               onFiltersChange={setFilters}
               onCancel={handleCancel}
               onEditStartTime={(stream) => setEditingStream(stream)}
+              onRefresh={handleRefresh}
             />
           </section>
 
