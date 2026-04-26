@@ -176,3 +176,12 @@ export async function getStream(streamId: string): Promise<Stream> {
   const body = await parseResponse<{ data: Stream }>(response);
   return body.data;
 }
+
+export interface AppConfig {
+  allowedAssets: string[];
+}
+
+export async function getConfig(): Promise<AppConfig> {
+  const response = await fetch(`${API_BASE}/config`);
+  return parseResponse<AppConfig>(response);
+}

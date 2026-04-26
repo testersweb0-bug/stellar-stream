@@ -156,6 +156,12 @@ app.get("/api/assets", (_req: Request, res: Response) => {
   });
 });
 
+app.get("/api/config", (_req: Request, res: Response) => {
+  res.json({
+    allowedAssets: ALLOWED_ASSETS,
+  });
+});
+
 app.get("/api/streams", (req: Request, res: Response) => {
   const parsedQuery = listStreamsQuerySchema.safeParse(req.query);
   if (!parsedQuery.success) {

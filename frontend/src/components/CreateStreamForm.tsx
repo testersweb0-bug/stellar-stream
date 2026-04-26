@@ -1,4 +1,5 @@
-import { useState, FormEvent } from "react";
+import { useState, useEffect, FormEvent } from "react";
+import { getConfig } from "../services/api";
 // Form Draft Autosave [Verified]: Survives refresh, clears on submit/discard, aligns with fields.
 import { useDraftAutosave } from "../hooks/useDraftAutosave";
 import { CreateStreamPayload } from "../types/stream";
@@ -105,7 +106,8 @@ const INITIAL_VALUES: FormValues = {
   startInMinutes: "0",
 };
 
-const allowedAssets = ["USDC", "XLM", "BTC"]; // example allowed assets
+// Initial fallback if fetch hasn't completed or failed
+const DEFAULT_ALLOWED_ASSETS = ["USDC", "XLM"];
 
 export function CreateStreamForm({
   onCreate,
@@ -116,6 +118,33 @@ export function CreateStreamForm({
     "stellar-stream:create-draft",
     INITIAL_VALUES
   );
+  const [allowedAssets, setAllowedAssets] = useState<string[]>([]);
+  const [configFetchFailed, setConfigFetchFailed] = useState(false);
+
+  useEffect(() => {
+    async function fetchConfig() {
+      try {
+        const config = await getConfig();
+        setAllowedAssets(config.allowedAssets);
+        
+        // Handle defaulting logic
+        const currentAsset = values.assetCode;
+        const isCurrentValid = config.allowedAssets.includes(currentAsset);
+        
+        if (!isCurrentValid) {
+          if (config.allowedAssets.includes("USDC")) {
+            setValues(prev => ({ ...prev, assetCode: "USDC" }));
+          } else if (config.allowedAssets.length > 0) {
+            setValues(prev => ({ ...prev, assetCode: config.allowedAssets[0] }));
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch config:", err);
+        setConfigFetchFailed(true);
+      }
+    }
+    fetchConfig();
+  }, []); // Only fetch once on mount
   const [touched, setTouched] = useState<
     Partial<Record<keyof FormValues, boolean>>
   >({});
@@ -250,21 +279,35 @@ export function CreateStreamForm({
               *
             </span>
           </label>
-          <select
-            id="stream-asset"
-            value={values.assetCode}
-            onChange={set("assetCode")}
-            onBlur={blur("assetCode")}
-            aria-describedby={errors.assetCode ? "asset-error" : "asset-hint"}
-            aria-invalid={!!errors.assetCode}
-            required
-          >
-            {allowedAssets.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
+          {!configFetchFailed && allowedAssets.length > 0 ? (
+            <select
+              id="stream-asset"
+              value={values.assetCode}
+              onChange={set("assetCode")}
+              onBlur={blur("assetCode")}
+              aria-describedby={errors.assetCode ? "asset-error" : "asset-hint"}
+              aria-invalid={!!errors.assetCode}
+              required
+            >
+              {allowedAssets.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              id="stream-asset"
+              type="text"
+              value={values.assetCode}
+              onChange={set("assetCode")}
+              onBlur={blur("assetCode")}
+              placeholder="e.g. USDC"
+              aria-describedby={errors.assetCode ? "asset-error" : "asset-hint"}
+              aria-invalid={!!errors.assetCode}
+              required
+            />
+          )}
           {errors.assetCode && (
             <span id="asset-error" className="field-error" role="alert">
               {errors.assetCode}
