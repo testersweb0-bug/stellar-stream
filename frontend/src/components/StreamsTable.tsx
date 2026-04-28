@@ -38,6 +38,7 @@ function formatTimestamp(unixSeconds: number): string {
 
 
 
+
   };
 
   // Helper: determine if a stream is eligible for selection (active or scheduled)
@@ -127,17 +128,7 @@ function formatTimestamp(unixSeconds: number): string {
     );
   };
 
-  // Clear selections when streams change (e.g., after filter change)
-  useEffect(() => {
-    setSelectedStreamIds((prev) => {
-      const validIds = new Set(streams.map((s) => s.id));
-      const next = new Set<string>();
-      prev.forEach((id) => {
-        if (validIds.has(id)) next.add(id);
-      });
-      return next;
-    });
-  }, [streams]);
+
 
   return (
     <div className="card">
@@ -156,34 +147,9 @@ function formatTimestamp(unixSeconds: number): string {
         </a>
       </div>
 
-        {streams.length === 0 ? (
-          <p className="muted">No streams match your filters.</p>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th style={{ width: "40px" }}>
-                    {selectableStreams.length > 0 && (
-                      <input
-                        type="checkbox"
-                        checked={allSelectableSelected}
-                        onChange={handleSelectAllToggle}
-                        aria-label="Select all streams"
-                        style={{ cursor: "pointer" }}
-                      />
-                    )}
-                  </th>
-                  <th>ID</th>
-                  <th>Route</th>
-                  <th>Asset</th>
-                  <th>Progress</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
+
             <tbody>
-              {streams.map((stream) => {
+              {sortedStreams.map((stream) => {
                 const isScheduled = stream.progress.status === "scheduled";
                 const isFinalised =
                   stream.progress.status === "completed" ||
