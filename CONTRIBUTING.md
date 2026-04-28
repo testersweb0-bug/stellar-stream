@@ -17,19 +17,11 @@ Run `npm run test` in the `backend/` directory.
 Run `cargo test` in the `contracts/` directory.
 
 #### Snapshot Testing
-We use `insta` for snapshot testing of contract events. 
+We use `insta` for snapshot testing of contract events.  
 Snapshot files are located in `contracts/test_snapshots/`.
 
 **To update snapshots:**
 If you change event structures and need to update the snapshots, run:
+
 ```bash
 cargo insta review
-```
-This will allow you to interactively review and accept changes to the snapshots.
-
-## Pull Request Process
-
-1. Create a feature branch from `main`.
-2. Ensure all tests pass.
-3. Update documentation if necessary.
-4. Submit a PR and wait for review.
