@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, type RefObject } from "react";
+
 import { Stream } from "../types/stream";
 import { getExportCsvUrl, ListStreamsFilters } from "../services/api";
 import { CopyableAddress } from "./CopyableAddress";
@@ -33,19 +33,7 @@ function formatTimestamp(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString();
 }
 
-export function StreamsTable({
-  streams,
-  filters,
-  onFiltersChange,
-  onCancel,
-  onEditStartTime,
-  onOpenStream,
-}: StreamsTableProps) {
-  const [expandedStreamId, setExpandedStreamId] = useState<string | null>(null);
-  const exportUrl = useMemo(() => getExportCsvUrl(filters as Record<string, string>), [filters]);
 
-  const toggleTimeline = (streamId: string) => {
-    setExpandedStreamId((prev) => (prev === streamId ? null : streamId));
   };
 
   return (
@@ -111,7 +99,6 @@ export function StreamsTable({
     </div>
   );
 }
-
 
 // ── StreamRow ─────────────────────────────────────────────────────────────
 // Extracted so each row can hold its own triggerRef without polluting the
@@ -252,4 +239,3 @@ function StreamRow({
     </>
   );
 }
-

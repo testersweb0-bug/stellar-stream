@@ -5,6 +5,7 @@ import {
   WebAuth,
 } from "@stellar/stellar-sdk";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
 import { sendApiError } from "../apiErrors";
 
@@ -16,8 +17,22 @@ const SERVER_SIGNING_KEY =
 const DOMAIN = (process.env.DOMAIN || "localhost").trim();
 const NETWORK_PASSPHRASE = process.env.NETWORK_PASSPHRASE || Networks.TESTNET;
 
-function getJwtSecret() {
-  return process.env.JWT_SECRET || "default_local_dev_secret_key";
+let jwtSecret = process.env.JWT_SECRET;
+
+if (!jwtSecret) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET must be set in production");
+  }
+
+  jwtSecret = crypto.randomBytes(32).toString("hex");
+
+  console.warn(
+    "JWT_SECRET not set — using ephemeral secret. All tokens will be invalidated on restart.",
+  );
+}
+
+export function getJwtSecret() {
+  return jwtSecret as string;
 }
 
 export interface AuthUser {
@@ -91,6 +106,41 @@ export function verifyChallengeAndIssueToken(
       throw new Error("Challenge has expired. Please request a new one.");
     }
     throw new Error(`Challenge verification failed: ${error.message}`);
+  }
+}
+
+/**
+ * Refreshes a still-valid JWT and returns a new one with a fresh 24h expiry.
+ *
+ * Accepts the current token in the Authorization header (Bearer scheme).
+ * Returns 401 if the token is missing, malformed, or already expired.
+ */
+export function refreshToken(req: Request, res: Response): void {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    sendApiError(req, res, 401, "Missing or invalid authorization header.", {
+      code: "UNAUTHORIZED",
+    });
+    return;
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = jwt.verify(token, getJwtSecret()) as AuthUser;
+
+    const newToken = jwt.sign(
+      { accountId: decoded.accountId },
+      getJwtSecret(),
+      { expiresIn: "24h" },
+    );
+
+    res.json({ token: newToken });
+  } catch {
+    sendApiError(req, res, 401, "Invalid or expired authorization token.", {
+      code: "UNAUTHORIZED",
+    });
   }
 }
 

@@ -1,6 +1,6 @@
 import axios from "axios";
 import { getDb } from "./db";
-import { getRetryDelaySeconds, computeSignature } from "./webhook";
+
 
 let isProcessing = false;
 let pollingInterval: NodeJS.Timeout | null = null;
@@ -43,14 +43,7 @@ export const processWebhookQueue = async () => {
           timestamp,
         };
         const bodyString = JSON.stringify(body);
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
 
-        const signingSecret = process.env.WEBHOOK_SIGNING_SECRET;
-        if (signingSecret) {
-          headers["X-StellarStream-Signature"] = computeSignature(signingSecret, bodyString);
-        }
 
         await axios.post(url, bodyString, { headers });
         success = true;
@@ -78,8 +71,8 @@ export const processWebhookQueue = async () => {
           ).run(url, payload, errorMsg, updateNow);
 
           db.prepare(
-            `UPDATE webhook_deliveries SET status = 'failed', attempt = ?, last_attempt_at = ?, error_message = ? WHERE id = ?`
-          ).run(newAttempt, updateNow, errorMsg, id);
+            `DELETE FROM webhook_deliveries WHERE id = ?`
+          ).run(id);
           console.error(`[WebhookWorker] Delivery ${id} (${event}) permanently failed after max attempts. Moved to dead-letter storage.`);
         } else {
           // Use configured retry delays: 5s, 15s, 60s, 300s, 900s
