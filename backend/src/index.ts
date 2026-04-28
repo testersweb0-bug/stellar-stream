@@ -2,27 +2,30 @@ import cors from "cors";
 import { requestLogger } from "./middleware/requestLogger";
 import "dotenv/config";
 import express, { NextFunction, Request, Response } from "express";
+import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { z } from "zod";
 import {
   normalizeUnknownApiError,
   sendApiError,
+  sendError,
   sendValidationError,
 } from "./apiErrors";
 import { swaggerDocument } from "./swagger";
-
 import {
   countAllEvents,
   getAllEvents,
   getGlobalEvents,
   getStreamHistory,
+  countStreamEvents,
 } from "./services/eventHistory";
 import { fetchOpenIssues } from "./services/openIssues";
-import { initIndexer, startIndexer } from "./services/indexer";
+import { initIndexer, startIndexer, getCircuitBreakerStatus } from "./services/indexer";
 import { startReconciliationJob } from "./services/reconciliationJob";
 import { startWebhookWorker } from "./services/webhookWorker";
 import { getDeadLetters, countDeadLetters } from "./services/webhook";
 import {
+  archiveOldStreams,
   calculateProgress,
   cancelStream,
   createStream,
@@ -31,19 +34,18 @@ import {
   listStreams,
   listStreamsByRecipient,
   listStreamsBySender,
+  pauseStream,
+  refreshStreamStatuses,
+  resumeStream,
   StreamStatus,
   syncStreams,
   updateStreamStartAt,
 } from "./services/streamStore";
-import {
-  getGlobalEvents,
-  countAllEvents,
-  getStreamHistory,
-  getAllEvents,
-} from "./services/eventHistory";
+
 import {
   authMiddleware,
   generateChallenge,
+  refreshToken,
   verifyChallengeAndIssueToken,
 } from "./services/auth";
 import {
@@ -53,11 +55,8 @@ import {
   senderAccountIdSchema,
   streamIdSchema,
   updateStreamStartAtSchema,
-  webhookRegistrationSchema,
 } from "./validation/schemas";
 import { validateEnv } from "./config/validateEnv";
-
-
 
 const STREAM_STATUSES: StreamStatus[] = [
   "scheduled",
@@ -68,6 +67,8 @@ const STREAM_STATUSES: StreamStatus[] = [
 const PAGINATION_DEFAULT_PAGE = 1;
 const PAGINATION_DEFAULT_LIMIT = 20;
 const PAGINATION_MAX_LIMIT = 100;
+const STREAM_HISTORY_DEFAULT_LIMIT = 50;
+const STREAM_HISTORY_MAX_LIMIT = 200;
 
 export const app = express();
 const port = Number(process.env.PORT ?? 3001);
@@ -89,6 +90,10 @@ const listStreamsQuerySchema = z.object({
   sender: z.string().trim().optional(),
   asset: z.string().trim().optional(),
   q: z.string().trim().optional(),
+  include_archived: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
   page: z
     .coerce.number()
     .int("page must be an integer")
@@ -97,9 +102,28 @@ const listStreamsQuerySchema = z.object({
   limit: z
     .coerce.number()
     .int("limit must be an integer")
-    .min(1, "limit must be greater than or equal to 1")
+    .min(1, "limit must be an integer")
     .max(PAGINATION_MAX_LIMIT, `limit must be less than or equal to ${PAGINATION_MAX_LIMIT}`)
     .optional(),
+});
+
+const AUTH_CHALLENGE_RATE_LIMIT = Number(process.env.AUTH_CHALLENGE_RATE_LIMIT ?? 10);
+
+const authChallengeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: AUTH_CHALLENGE_RATE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req: Request, res: Response) => {
+    const resetTime = (req as any).rateLimit?.resetTime;
+    const retryAfter = resetTime
+      ? Math.ceil((resetTime.getTime() - Date.now()) / 1000)
+      : 60;
+    res.set("Retry-After", String(Math.max(1, retryAfter)));
+    sendApiError(req, res, 429, "Too many requests. Please try again later.", {
+      code: "RATE_LIMIT_EXCEEDED",
+    });
+  },
 });
 
 app.use(cors());
@@ -138,6 +162,12 @@ app.get("/api/health", (_req: Request, res: Response) => {
   });
 });
 
+app.get("/api/metrics", (_req: Request, res: Response) => {
+  res.json({
+    indexer_circuit_breaker: getCircuitBreakerStatus(),
+  });
+});
+
 app.get("/api/assets", (_req: Request, res: Response) => {
   res.json({
     data: ALLOWED_ASSETS,
@@ -155,7 +185,7 @@ app.get("/api/streams", (req: Request, res: Response) => {
   const hasPage = req.query.page !== undefined;
   const hasLimit = req.query.limit !== undefined;
 
-  let data = listStreams().map((stream) => ({
+  let data = listStreams(query.include_archived).map((stream) => ({
     ...stream,
     progress: calculateProgress(stream),
   }));
@@ -228,11 +258,10 @@ app.get("/api/events", (req: Request, res: Response) => {
     !hasPage && !hasLimit ? total : (query.limit ?? PAGINATION_DEFAULT_LIMIT);
 
   const offset = (page - 1) * limit;
-  const data = getGlobalEvents(limit === 0 ? 0 : limit, offset, eventType);
+  const data = getGlobalEvents(limit === 0 ? 0 : limit, offset, eventType, query.cursor);
 
   res.json({ data, total, page, limit });
 });
-
 
 app.get("/api/streams/export.csv", (req: Request, res: Response) => {
   const parsedQuery = listStreamsQuerySchema.safeParse(req.query);
@@ -242,7 +271,7 @@ app.get("/api/streams/export.csv", (req: Request, res: Response) => {
   }
 
   const query = parsedQuery.data;
-  let data = listStreams().map((stream) => ({
+  let data = listStreams(query.include_archived).map((stream) => ({
     ...stream,
     progress: calculateProgress(stream),
   }));
@@ -313,7 +342,7 @@ app.get("/api/recipients/:accountId/streams", (req: Request, res: Response) => {
 
   const parsedQuery = listStreamsQuerySchema.safeParse(req.query);
   if (!parsedQuery.success) {
-    sendValidationError(res, parsedQuery.error.issues);
+    sendValidationError(req, res, parsedQuery.error.issues);
     return;
   }
   const query = parsedQuery.data;
@@ -324,7 +353,6 @@ app.get("/api/recipients/:accountId/streams", (req: Request, res: Response) => {
       progress: calculateProgress(stream),
     }));
 
-  // Apply filters
   if (query.status) {
     data = data.filter((stream) => stream.progress.status === query.status);
   }
@@ -350,7 +378,6 @@ app.get("/api/recipients/:accountId/streams", (req: Request, res: Response) => {
     });
   }
 
-  // Apply pagination
   const hasPage = req.query.page !== undefined;
   const hasLimit = req.query.limit !== undefined;
 
@@ -437,7 +464,7 @@ app.get("/api/senders/:accountId/streams", (req: Request, res: Response) => {
   });
 });
 
-app.get("/api/auth/challenge", (req: Request, res: Response) => {
+app.get("/api/auth/challenge", authChallengeLimiter, (req: Request, res: Response) => {
   const accountId = req.query.accountId;
   if (typeof accountId !== "string" || !accountId.trim()) {
     sendApiError(req, res, 400, "accountId query parameter is required.", {
@@ -451,6 +478,7 @@ app.get("/api/auth/challenge", (req: Request, res: Response) => {
     res.json({ transaction: challengeTransaction });
   } catch (error: any) {
 
+    });
   }
 });
 
@@ -468,8 +496,12 @@ app.post("/api/auth/token", (req: Request, res: Response) => {
     res.json({ token });
   } catch (error: any) {
 
+    });
   }
 });
+
+// POST /api/auth/refresh — accepts a valid Bearer JWT, returns a new one with fresh 24h expiry
+app.post("/api/auth/refresh", refreshToken);
 
 app.post("/api/streams", authMiddleware, async (req: Request, res: Response) => {
   const parsedBody = createStreamPayloadWithAllowedAssetsSchema(ALLOWED_ASSETS).safeParse(
@@ -479,6 +511,8 @@ app.post("/api/streams", authMiddleware, async (req: Request, res: Response) => 
     sendValidationError(req, res, parsedBody.error.issues);
     return;
   }
+
+
 
   try {
     const stream = await createStream(parsedBody.data);
@@ -509,15 +543,14 @@ app.post(
 
     const stream = getStream(parsedId.value);
     if (!stream) {
-      res.status(404).json({ error: "Stream not found.", requestId: req.requestId });
+      sendApiError(req, res, 404, "Stream not found.", { code: "NOT_FOUND" });
       return;
     }
 
     const user = (req as any).user;
     if (stream.sender !== user.accountId) {
-      res.status(403).json({
-        error: "Only the sender can cancel this stream.",
-        requestId: req.requestId,
+      sendApiError(req, res, 403, "Only the sender can cancel this stream.", {
+        code: "FORBIDDEN",
       });
       return;
     }
@@ -527,6 +560,79 @@ app.post(
     } catch (error: any) {
       console.error("Failed to cancel stream:", error);
       const normalizedError = normalizeUnknownApiError(error, "Failed to cancel stream.");
+      sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+        code: normalizedError.code ?? "INTERNAL_ERROR",
+      });
+    }
+  },
+);
+
+// POST /api/streams/:id/claim — recipient claims vested tokens
+app.post(
+  "/api/streams/:id/claim",
+  authMiddleware,
+  async (req: Request, res: Response) => {
+    const parsedId = parseStreamId(req.params.id);
+    if (!parsedId.ok) {
+      sendValidationError(req, res, parsedId.issues);
+      return;
+    }
+
+    const stream = getStream(parsedId.value);
+    if (!stream) {
+      sendApiError(req, res, 404, "Stream not found.", { code: "NOT_FOUND" });
+      return;
+    }
+
+    const user = (req as any).user;
+    if (stream.recipient !== user.accountId) {
+      sendApiError(req, res, 403, "Only the recipient can claim this stream.", {
+        code: "FORBIDDEN",
+      });
+      return;
+    }
+
+    const progress = calculateProgress(stream);
+    if (progress.vestedAmount <= 0) {
+      sendApiError(req, res, 400, "No claimable amount available.", {
+        code: "NO_CLAIMABLE_AMOUNT",
+      });
+      return;
+    }
+
+    try {
+      // Record the claim event in the local DB.
+      // In a full on-chain implementation this would submit a `claim` Soroban tx.
+      const db = (await import("./services/db")).getDb();
+      const { recordEventWithDb } = await import("./services/eventHistory");
+      const now = Math.floor(Date.now() / 1000);
+      db.transaction(() => {
+        recordEventWithDb(
+          db,
+          stream.id,
+          "claimed",
+          now,
+          stream.recipient,
+          progress.vestedAmount,
+          { assetCode: stream.assetCode },
+        );
+      })();
+
+      const history = await import("./services/eventHistory").then((m) =>
+        m.getStreamHistory(stream.id),
+      );
+
+      res.json({
+        result: {
+          claimedAmount: progress.vestedAmount,
+          assetCode: stream.assetCode,
+          txHash: `local-${stream.id}-${now}`,
+        },
+        history,
+      });
+    } catch (error: any) {
+      console.error("Failed to record claim:", error);
+      const normalizedError = normalizeUnknownApiError(error, "Failed to process claim.");
       sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
         code: normalizedError.code ?? "INTERNAL_ERROR",
       });
@@ -546,18 +652,13 @@ app.patch(
 
     const existingStream = getStream(parsedId.value);
     if (!existingStream) {
-      res
-        .status(404)
-        .json({ error: "Stream not found.", requestId: req.requestId });
+      sendApiError(req, res, 404, "Stream not found.", { code: "NOT_FOUND" });
       return;
     }
 
     const user = (req as any).user;
-    if (user && existingStream.sender !== user.accountId) {
-      res.status(403).json({
-        error: "Only the stream sender can update the start time.",
+
         code: "FORBIDDEN",
-        requestId: req.requestId,
       });
       return;
     }
@@ -568,39 +669,11 @@ app.patch(
       return;
     }
 
-    const stream = getStream(parsedId.value);
-    if (!stream) {
-      res.status(404).json({ error: "Stream not found.", requestId: req.requestId });
-      return;
-    }
 
-    const user = (req as any).user;
-    if (stream.sender !== user.accountId) {
-      res.status(403).json({
-        error: "Only the sender can update the start time.",
-        requestId: req.requestId,
+      sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+        code: normalizedError.code ?? "INTERNAL_ERROR",
       });
-      return;
     }
-
-    const now = Math.floor(Date.now() / 1000);
-    const newStartAt = parsedBody.data.startAt;
-
-    return;
-  }
-
-    try {
-  const updatedStream = updateStreamStartAt(parsedId.value, newStartAt);
-  res.json({ data: { ...updatedStream, progress: calculateProgress(updatedStream) } });
-} catch (error: any) {
-  const normalizedError = normalizeUnknownApiError(
-    error,
-    "Failed to update stream start time.",
-  );
-  sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
-    code: normalizedError.code ?? "INTERNAL_ERROR",
-  });
-}
   },
 );
 
@@ -617,7 +690,33 @@ app.get("/api/streams/:id/history", (req: Request, res: Response) => {
     return;
   }
 
-  res.json({ data: getStreamHistory(parsedId.value) });
+  // Parse and validate query parameters
+  const limit = Math.min(
+    Math.max(1, parseInt(req.query.limit as string) || STREAM_HISTORY_DEFAULT_LIMIT),
+    STREAM_HISTORY_MAX_LIMIT
+  );
+  const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+
+  const total = countStreamEvents(parsedId.value);
+  const data = getStreamHistory(parsedId.value, limit, offset);
+
+  res.json({ data, total, limit, offset });
+});
+
+app.get("/api/streams/:id/history/summary", (req: Request, res: Response) => {
+  const parsedId = parseStreamId(req.params.id);
+  if (!parsedId.ok) {
+    sendValidationError(req, res, parsedId.issues);
+    return;
+  }
+
+  const stream = getStream(parsedId.value);
+  if (!stream) {
+    sendApiError(req, res, 404, "Stream not found.", { code: "NOT_FOUND" });
+    return;
+  }
+
+  res.json({ data: getStreamEventSummary(parsedId.value) });
 });
 
 app.get("/api/streams/:id/snapshot", (req: Request, res: Response) => {
@@ -694,20 +793,16 @@ app.get("/api/webhooks/dead-letters", authMiddleware, (req: Request, res: Respon
   }
 });
 
-
-
-
 async function startServer() {
-  // ── Validate environment first — exits with code 1 on bad config ──────
   const config = validateEnv();
 
   await initSoroban();
   await syncStreams();
 
-  // Initialize and start event indexer
+
   if (config.sorobanEnabled && config.contractId) {
     initIndexer(config.rpcUrl, config.contractId, config.networkPassphrase);
-    startIndexer(10000); // Poll every 10 seconds
+    startIndexer(10000);
     startReconciliationJob(
       Number(process.env.RECONCILIATION_INTERVAL_MS ?? 60000),
     );
