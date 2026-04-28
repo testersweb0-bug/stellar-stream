@@ -1,20 +1,22 @@
-import React, { useState, useMemo, useRef } from "react"; // Added missing imports
+
 import { Stream } from "../types/stream";
 import { getExportCsvUrl, ListStreamsFilters } from "../services/api";
 import { CopyableAddress } from "./CopyableAddress";
 import { StreamTimeline } from "./StreamTimeline";
 import { getHealthBadges } from "../utils/streamHealthBadges";
+import { FilterBar } from "./FilterBar";
 
 interface StreamsTableProps {
   streams: Stream[];
   filters: ListStreamsFilters;
   onFiltersChange: (f: ListStreamsFilters) => void;
   onCancel: (streamId: string) => Promise<void>;
+  onOpenStream?: (streamId: string) => void;
   /**
    * Called when the user clicks "Edit" for a scheduled stream.
    * Receives the stream AND the button ref so the modal can return focus.
    */
-  onEditStartTime: (stream: Stream, triggerRef: React.RefObject<HTMLButtonElement | null>) => void;
+  onEditStartTime: (stream: Stream, triggerRef: RefObject<HTMLButtonElement | null>) => void;
 }
 
 function statusClass(status: Stream["progress"]["status"]): string {
@@ -31,18 +33,12 @@ function formatTimestamp(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString();
 }
 
-// ── Fixed Component Declaration ───────────────────────────────────────────
-export function StreamsTable({ streams, filters, onFiltersChange, onCancel, onEditStartTime }: StreamsTableProps) {
-  const [expandedStreamId, setExpandedStreamId] = useState<string | null>(null);
 
-  const exportUrl = useMemo(() => getExportCsvUrl(filters), [filters]);
-
-  const toggleTimeline = (id: string) => {
-    setExpandedStreamId(prev => (prev === id ? null : id));
   };
 
   return (
     <div className="card">
+      <FilterBar filters={filters} onChange={onFiltersChange} />
       <div
         style={{
           display: "flex",
@@ -92,6 +88,7 @@ export function StreamsTable({ streams, filters, onFiltersChange, onCancel, onEd
                     onToggleTimeline={toggleTimeline}
                     onCancel={onCancel}
                     onEditStartTime={onEditStartTime}
+                    onOpenStream={onOpenStream}
                   />
                 );
               })}
@@ -116,6 +113,7 @@ interface StreamRowProps {
   onToggleTimeline: (id: string) => void;
   onCancel: (id: string) => Promise<void>;
   onEditStartTime: StreamsTableProps["onEditStartTime"];
+  onOpenStream?: (streamId: string) => void;
 }
 
 function StreamRow({
@@ -127,6 +125,7 @@ function StreamRow({
   onToggleTimeline,
   onCancel,
   onEditStartTime,
+  onOpenStream,
 }: StreamRowProps) {
   /**
    * Stable ref to the "✏️ Edit" button in this row.
@@ -143,7 +142,10 @@ function StreamRow({
             className="btn-ghost"
             aria-expanded={isExpanded}
             aria-controls={`timeline-${stream.id}`}
-            onClick={() => onToggleTimeline(stream.id)}
+            onClick={() => {
+              onToggleTimeline(stream.id);
+              onOpenStream?.(stream.id);
+            }}
             title={isExpanded ? "Hide timeline" : "Show timeline"}
           >
             {isExpanded ? "▲" : "▼"} {stream.id}

@@ -1,103 +1,64 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type RefObject } from "react";
 import { CreateStreamForm } from "./components/CreateStreamForm";
 import { EditStartTimeModal } from "./components/EditStartTimeModal";
 import { IssueBacklog } from "./components/IssueBacklog";
 import { RecipientDashboard } from "./components/RecipientDashboard";
-import { StreamsTable } from "./components/StreamsTable";
-
+import { SenderDashboard } from "./components/SenderDashboard";
+import { StreamDetailDrawer } from "./components/StreamDetailDrawer";
 import { StreamMetricsChart } from "./components/StreamMetricsChart";
-import { WalletButton } from "./components/WalletButton";
 import { StreamTimeline } from "./components/StreamTimeline";
+import { StreamsTable } from "./components/StreamsTable";
+import { WalletButton } from "./components/WalletButton";
 import { useFreighter } from "./hooks/useFreighter";
+import { useMetricsHistory } from "./hooks/useMetricsHistory";
+import { defaultStreamFilters, useStreamFilter } from "./hooks/useStreamFilter";
+import { useToast } from "./hooks/useToast";
+import { useWebSocket } from "./hooks/useWebSocket";
 import {
+  ApiError,
   cancelStream,
   createStream,
+  listOpenIssues,
   listStreams,
   updateStreamStartAt,
 } from "./services/api";
+import { ListStreamsFilters } from "./services/api";
 import { OpenIssue, Stream } from "./types/stream";
-import { useMetricsHistory } from "./hooks/useMetricsHistory";
-import { useUrlFilters } from "./hooks/useUrlFilters";
 
 type ViewMode = "dashboard" | "recipient" | "sender";
-
-// Derive a user-friendly hint string for global (non-form) errors.
-function describeGlobalError(raw: string): string {
-  const lower = raw.toLowerCase();
-  if (
-    lower.includes("network") ||
-    lower.includes("fetch") ||
-    lower.includes("failed to fetch")
-  ) {
-    return "Network error — check that the StellarStream backend is running and reachable.";
-  }
-  if (lower.includes("not found")) {
-    return "The requested stream could not be found. It may have already been cancelled.";
-  }
-  if (lower.includes("cancel")) {
-    return `Unable to cancel stream: ${raw}`;
-  }
-  return raw;
-}
 
 function App() {
   const wallet = useFreighter();
 
-  // ── ISSUE #159: Dark Mode Logic (LocalStorage + System Preference) ─────────────────
-  // This logic initializes the theme from localStorage or system settings
-  const [theme, setTheme] = useState(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved) return saved;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  });
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-
-  const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
-  // ───────────────────────────────────────────────────────────────────────────────────
-
-  const {
-    view: viewMode,
-    filters,
-    streamId: detailStreamId,
-    setView: setViewMode,
-    setFilters,
-    openStream,
-    closeStream,
-  } = useUrlFilters();
   const [streams, setStreams] = useState<Stream[]>([]);
   const [issues, setIssues] = useState<OpenIssue[]>([]);
-  const [globalError, setGlobalError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [editingStream, setEditingStream] = useState<{
     stream: Stream;
-    triggerRef: React.RefObject<HTMLButtonElement | null>;
+    triggerRef: RefObject<HTMLButtonElement | null>;
   } | null>(null);
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [initialLoading, setInitialLoading] = useState(true);
 
+
   const metrics = useMemo(() => {
-    const activeCount = streams.filter(
+    const activeCount = filteredStreams.filter(
       (s) => s.progress.status === "active",
     ).length;
-    const completedCount = streams.filter(
+    const completedCount = filteredStreams.filter(
       (s) => s.progress.status === "completed",
     ).length;
-    const totalVested = streams.reduce(
+    const totalVested = filteredStreams.reduce(
       (sum, s) => sum + s.progress.vestedAmount,
       0,
     );
-
     return {
-      total: streams.length,
+      total: filteredStreams.length,
       active: activeCount,
       completed: completedCount,
       vested: Number(totalVested.toFixed(2)),
     };
-  }, [streams]);
+  }, [filteredStreams]);
 
   const metricsHistory = useMetricsHistory(
     metrics.active,
@@ -106,37 +67,115 @@ function App() {
     5000,
   );
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const rawView = params.get("view");
+    const rawStreamId = params.get("streamId");
+    if (rawView === "dashboard" || rawView === "sender" || rawView === "recipient") {
+      setViewMode(rawView);
+    }
+    setDetailStreamId(rawStreamId);
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (viewMode === "dashboard") {
+      params.delete("view");
+    } else {
+      params.set("view", viewMode);
+    }
+    if (detailStreamId) {
+      params.set("streamId", detailStreamId);
+    } else {
+      params.delete("streamId");
+    }
+    const next = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      next ? `${window.location.pathname}?${next}` : window.location.pathname,
+    );
+  }, [detailStreamId, viewMode]);
+
+  async function refreshStreams(currentFilters: ListStreamsFilters): Promise<void> {
+    const data = await listStreams(currentFilters);
+    setStreams(data);
+  }
+
+  useEffect(() => {
+    setLoadingDashboard(true);
+    refreshStreams(apiFilters)
+      .catch((err: unknown) => {
+        const message =
+          err instanceof ApiError
+            ? `Failed loading streams (${err.statusCode})`
+            : "Failed loading streams";
+        showToast(message, "error");
+      })
+      .finally(() => {
+        setInitialLoading(false);
+        setLoadingDashboard(false);
+      });
+  }, [apiFilters, showToast]);
+
+  useEffect(() => {
+    listOpenIssues()
+      .then(setIssues)
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!lastMessage) return;
+    const eventKind = lastMessage.eventType ?? lastMessage.type ?? "";
+    if (!eventKind) return;
+
+    if (eventKind.includes("created")) {
+      showToast("Stream created", "success");
+    } else if (eventKind.includes("cancel")) {
+      showToast("Stream canceled", "info");
+    } else if (eventKind.includes("complete")) {
+      showToast("Stream completed", "success");
+    }
+    refreshStreams(apiFilters).catch(() => undefined);
+  }, [apiFilters, lastMessage, showToast]);
+
   async function handleCreate(
     payload: Parameters<typeof createStream>[0],
   ): Promise<void> {
     setFormError(null);
-    setGlobalError(null);
     try {
       await createStream(payload);
-      const data = await listStreams(filters);
-      setStreams(data);
+      await refreshStreams(apiFilters);
+      showToast("Stream created successfully", "success");
     } catch (err) {
-      setFormError(
-        err instanceof Error ? err.message : "Failed to create stream.",
-      );
+      if (err instanceof ApiError) {
+        setFormError(err.message);
+        showToast(`Create failed (${err.statusCode}): ${err.message}`, "error");
+        return;
+      }
+      const fallback = err instanceof Error ? err.message : "Failed to create stream.";
+      setFormError(fallback);
+      showToast(fallback, "error");
     }
   }
 
   async function handleCancel(streamId: string): Promise<void> {
-    setGlobalError(null);
-    setFormError(null);
     try {
       await cancelStream(streamId);
-      const data = await listStreams(filters);
-      setStreams(data);
+      await refreshStreams(apiFilters);
+      showToast("Stream canceled", "info");
     } catch (err) {
-      setGlobalError(
-        err instanceof Error
-          ? describeGlobalError(err.message)
-          : "Failed to cancel the stream. Please try again.",
+      if (err instanceof ApiError) {
+        showToast(`Cancel failed (${err.statusCode}): ${err.message}`, "error");
+        return;
+      }
+      showToast(
+        err instanceof Error ? err.message : "Failed to cancel the stream.",
+        "error",
       );
     }
   }
+
 
   return (
     <div className="app-shell">
@@ -192,9 +231,11 @@ function App() {
       </nav>
 
       {viewMode === "sender" ? (
-        <SenderDashboard 
-          senderAddress={wallet.address} 
-          onEditStartTime={(stream) => setEditingStream(stream)}
+        <SenderDashboard
+          senderAddress={wallet.address}
+          onEditStartTime={(stream) =>
+            setEditingStream({ stream, triggerRef: { current: null } })
+          }
         />
       ) : viewMode === "recipient" ? (
         <RecipientDashboard recipientAddress={wallet.address} />
@@ -224,35 +265,26 @@ function App() {
             <StreamMetricsChart data={metricsHistory} />
           </section>
 
-          {/* Global (cancel / bootstrap) errors shown as a dismissible banner */}
-          {globalError && (
-            <div className="error-banner" role="alert" aria-live="assertive">
-              <span className="error-banner__icon" aria-hidden>
-                ✕
-              </span>
-              <span>{globalError}</span>
-              <button
-                className="error-banner__dismiss"
-                type="button"
-                aria-label="Dismiss error"
-                onClick={() => setGlobalError(null)}
-              >
-                ×
-              </button>
-            </div>
-          )}
-
           <section className="layout-grid">
-            {/* formError is passed into the form so the create-stream card can show it inline */}
-            <CreateStreamForm onCreate={handleCreate} apiError={formError} />
+            <CreateStreamForm
+              onCreate={handleCreate}
+              apiError={formError}
+              walletAddress={wallet.address}
+            />
             <StreamsTable
-              streams={streams}
-              filters={filters}
-              onFiltersChange={setFilters}
+              streams={filteredStreams}
+              filters={tableFilters}
+              onFiltersChange={(next) => {
+                setFilter("status", next.status ?? defaultStreamFilters.status);
+                setFilter("sender", next.sender ?? defaultStreamFilters.sender);
+                setFilter("recipient", next.recipient ?? defaultStreamFilters.recipient);
+                setFilter("assetCode", next.asset ?? defaultStreamFilters.assetCode);
+              }}
               onCancel={handleCancel}
               onEditStartTime={(stream, triggerRef) =>
                 setEditingStream({ stream, triggerRef })
               }
+              onOpenStream={setDetailStreamId}
             />
           </section>
 
@@ -263,7 +295,6 @@ function App() {
             <StreamTimeline />
           </section>
 
-          {/* Edit start-time modal — only rendered when a stream is being edited */}
           {editingStream && (
             <EditStartTimeModal
               stream={editingStream.stream}
@@ -273,11 +304,10 @@ function App() {
             />
           )}
 
-          {/* Stream detail drawer — URL-driven via ?streamId= */}
           {detailStreamId && (
             <StreamDetailDrawer
               streamId={detailStreamId}
-              onClose={closeStream}
+              onClose={() => setDetailStreamId(null)}
               onCancel={handleCancel}
             />
           )}
