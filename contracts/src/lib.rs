@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token::Client as TokenClient, Address, Env,
-
+    Map, String, Vec,
 };
 
 const NATIVE_SENTINEL: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
@@ -23,7 +23,9 @@ pub struct Stream {
     pub end_time: u64,
     pub cliff_seconds: u64,
     pub canceled: bool,
-
+    pub paused: bool,
+    pub pause_started_at: Option<u64>,
+    pub metadata: Option<Map<String, String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -31,7 +33,7 @@ pub struct Stream {
 // ---------------------------------------------------------------------------
 
 #[contracttype]
-enum DataKey {
+pub enum DataKey {
     Admin,
     NextStreamId,
     Stream(u64),
@@ -76,6 +78,35 @@ pub struct StreamCanceled {
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamTransferred {
+    pub stream_id: u64,
+    pub old_recipient: Address,
+    pub new_recipient: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamPaused {
+    pub stream_id: u64,
+    pub sender: Address,
+    pub paused_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamResumed {
+    pub stream_id: u64,
+    pub sender: Address,
+    pub resumed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClawbackExecuted {
+    pub stream_id: u64,
+    pub amount: i128,
+    pub recipient: Address,
+}
 
 #[contract]
 pub struct StellarStreamContract;
@@ -120,7 +151,7 @@ impl StellarStreamContract {
             panic!("end_time must be greater than start_time");
         }
 
-
+        let token_client = TokenClient::new(&env, &token);
         let sender_balance = token_client.balance(&sender);
         if sender_balance < total_amount {
             panic!("insufficient sender balance");
@@ -147,7 +178,9 @@ impl StellarStreamContract {
             end_time,
             cliff_seconds,
             canceled: false,
-
+            paused: false,
+            pause_started_at: None,
+            metadata: metadata.clone(),
         };
 
         env.storage()
@@ -214,9 +247,11 @@ impl StellarStreamContract {
 
         let mut allocated_total = 0_i128;
         let mut child_ids = Vec::<u64>::new(&env);
+        
         for recipient_allocation in recipients.iter() {
             let recipient = recipient_allocation.0.clone();
             let allocation = recipient_allocation.1;
+            
             if allocation <= 0 {
                 panic!("allocation must be positive");
             }
@@ -238,6 +273,7 @@ impl StellarStreamContract {
                 pause_started_at: None,
                 metadata: None,
             };
+            
             env.storage()
                 .persistent()
                 .set(&DataKey::Stream(child_stream_id), &child_stream);
@@ -257,7 +293,7 @@ impl StellarStreamContract {
                     total_amount: allocation,
                     start_time,
                     end_time,
-
+                    cliff_seconds: 0,
                     metadata: None,
                 },
             );
@@ -273,6 +309,7 @@ impl StellarStreamContract {
         env.storage()
             .persistent()
             .set(&DataKey::NextStreamId, &next_id);
+            
         parent_stream_id
     }
 
@@ -371,77 +408,8 @@ impl StellarStreamContract {
         amount
     }
 
-
+    pub fn cancel(env: Env, stream_id: u64, sender: Address) {
         let mut stream = read_stream(&env, stream_id);
-        if stream.sender != sender {
-            panic!("sender mismatch");
-        }
-        sender.require_auth();
-
-        if stream.canceled {
-            panic!("stream is canceled");
-        }
-        if stream.paused_at != 0 {
-            panic!("stream is already paused");
-        }
-
-        let now = env.ledger().timestamp();
-        if now >= stream.end_time {
-            panic!("stream has already ended");
-        }
-
-        stream.paused_at = now;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Stream(stream_id), &stream);
-
-        env.events().publish(
-            (symbol_short!("Stream"), symbol_short!("Paused")),
-            StreamPaused {
-                stream_id,
-                sender,
-                paused_at: now,
-            },
-        );
-    }
-
-    pub fn resume(env: Env, stream_id: u64, sender: Address) {
-        let mut stream = read_stream(&env, stream_id);
-        if stream.sender != sender {
-            panic!("sender mismatch");
-        }
-        sender.require_auth();
-
-        if stream.canceled {
-            panic!("stream is canceled");
-        }
-        if stream.paused_at == 0 {
-            panic!("stream is not paused");
-        }
-
-        let now = env.ledger().timestamp();
-        let elapsed_pause = now - stream.paused_at;
-        stream.paused_duration += elapsed_pause;
-        // Extend end_time so the recipient doesn't lose vesting time.
-        stream.end_time += elapsed_pause;
-        stream.paused_at = 0;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Stream(stream_id), &stream);
-
-        env.events().publish(
-            (symbol_short!("Stream"), symbol_short!("Resumed")),
-            StreamResumed {
-                stream_id,
-                sender,
-                resumed_at: now,
-                paused_duration: stream.paused_duration,
-            },
-        );
-    }
-
-    pub fn cancel(env: Env, stream_id: u64, sender: Address) {        let mut stream = read_stream(&env, stream_id);
         if stream.sender != sender {
             panic!("sender mismatch");
         }
@@ -520,11 +488,22 @@ impl StellarStreamContract {
             panic!("stream already paused");
         }
 
+        let now = env.ledger().timestamp();
         stream.paused = true;
-        stream.pause_started_at = Some(env.ledger().timestamp());
+        stream.pause_started_at = Some(now);
+        
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
+
+        env.events().publish(
+            (symbol_short!("Stream"), symbol_short!("Paused")),
+            StreamPaused {
+                stream_id,
+                sender,
+                paused_at: now,
+            },
+        );
     }
 
     pub fn resume_stream(env: Env, stream_id: u64, sender: Address) {
@@ -542,6 +521,7 @@ impl StellarStreamContract {
             .unwrap_or_else(|| panic!("pause timestamp missing"));
         let now = env.ledger().timestamp();
         let paused_duration = now.saturating_sub(pause_started_at);
+        
         stream.start_time = stream.start_time.saturating_add(paused_duration);
         stream.end_time = stream.end_time.saturating_add(paused_duration);
         stream.paused = false;
@@ -550,6 +530,15 @@ impl StellarStreamContract {
         env.storage()
             .persistent()
             .set(&DataKey::Stream(stream_id), &stream);
+
+        env.events().publish(
+            (symbol_short!("Stream"), symbol_short!("Resumed")),
+            StreamResumed {
+                stream_id,
+                sender,
+                resumed_at: now,
+            },
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -624,20 +613,15 @@ fn read_stream(env: &Env, stream_id: u64) -> Stream {
 }
 
 fn vested_amount(stream: &Stream, at_time: u64) -> i128 {
-    let effective_at_time = if stream.paused {
+    let effective_now = if stream.paused {
         stream.pause_started_at.unwrap_or(at_time)
     } else {
         at_time
     };
 
-    if effective_at_time < stream.start_time.saturating_add(stream.cliff_seconds) {
+    if effective_now < stream.start_time.saturating_add(stream.cliff_seconds) {
         return 0;
     }
-
-
-    } else {
-        effective_at_time
-    };
 
     let effective_time = if effective_now >= stream.end_time {
         stream.end_time
@@ -645,8 +629,8 @@ fn vested_amount(stream: &Stream, at_time: u64) -> i128 {
         effective_now
     };
 
-    let elapsed = effective_time - stream.start_time;
-    let total_duration = stream.end_time - stream.start_time;
+    let elapsed = effective_time.saturating_sub(stream.start_time);
+    let total_duration = stream.end_time.saturating_sub(stream.start_time);
 
     if total_duration == 0 {
         return 0;
