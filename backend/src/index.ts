@@ -21,6 +21,8 @@ import {
 } from "./services/eventHistory";
 import { fetchOpenIssues } from "./services/openIssues";
 import { initIndexer, startIndexer, getCircuitBreakerStatus } from "./services/indexer";
+import { adminAuth } from "./middleware/adminAuth";
+import { deleteStreamById } from "./services/streamStore";
 
 import { startReconciliationJob } from "./services/reconciliationJob";
 import { startWebhookWorker } from "./services/webhookWorker";
@@ -906,3 +908,28 @@ async function startServer() {
 if (require.main === module) {
   startServer().catch(console.error);
 }
+
+app.delete("/api/streams/:id", adminAuth, (req: Request, res: Response) => {
+  const parsedId = parseStreamId(req.params.id);
+  if (!parsedId.ok) {
+    sendValidationError(req, res, parsedId.issues);
+    return;
+  }
+
+  try {
+    const deleted = deleteStreamById(parsedId.value);
+
+    if (!deleted) {
+      sendApiError(req, res, 404, "Stream not found.", { code: "NOT_FOUND" });
+      return;
+    }
+
+    res.status(204).send();
+  } catch (error: any) {
+    console.error("Failed to delete stream:", error);
+    const normalizedError = normalizeUnknownApiError(error, "Failed to delete stream.");
+    sendApiError(req, res, normalizedError.statusCode, normalizedError.message, {
+      code: normalizedError.code ?? "INTERNAL_ERROR",
+    });
+  }
+});

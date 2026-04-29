@@ -1063,3 +1063,23 @@ export function updateStreamStartAt(  id: string,
   return stream;
 }
 
+
+export function deleteStreamById(id: string): boolean {
+  const db = getDb();
+
+  const stream = db
+    .prepare("SELECT id FROM streams WHERE id = ?")
+    .get(id);
+
+  if (!stream) return false;
+
+  const transaction = db.transaction(() => {
+    db.prepare("DELETE FROM event_history WHERE stream_id = ?").run(id);
+    db.prepare("DELETE FROM streams WHERE id = ?").run(id);
+  });
+
+  transaction();
+
+  return true;
+}
+
