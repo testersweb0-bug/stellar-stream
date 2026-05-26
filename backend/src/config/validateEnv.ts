@@ -30,6 +30,14 @@ const portSchema = z
     message: "must be a valid port number (1-65535)",
   });
 
+// Indexer poll interval validation
+const indexerPollIntervalSchema = z
+  .string()
+  .transform((val: string) => parseInt(val, 10))
+  .refine((val: number) => !isNaN(val) && val >= 5000, {
+    message: "must be a valid number >= 5000 (minimum 5 seconds)",
+  });
+
 // Environment config schema
 const envSchema = z.object({
   PORT: portSchema.optional().default(3001),
@@ -48,7 +56,7 @@ const envSchema = z.object({
   SERVER_SIGNING_KEY: z.string().optional(),
   DOMAIN: z.string().optional().default("localhost"),
   SOROBAN_DISABLED: z.string().optional(),
-
+  INDEXER_POLL_INTERVAL_MS: indexerPollIntervalSchema.optional().default(10000),
 });
 
 export interface ValidatedConfig {
@@ -65,7 +73,7 @@ export interface ValidatedConfig {
   jwtSecret: string | undefined;
   serverSigningKey: string | null;
   domain: string;
-
+  indexerPollIntervalMs: number;
 }
 
 export function validateEnv(): ValidatedConfig {
@@ -186,7 +194,7 @@ export function validateEnv(): ValidatedConfig {
     throw new Error("Environment validation failed");
   }
 
-  console.log(`✅ Configuration validated (port: ${env.PORT}, assets: ${allowedAssets.join(", ")})`);
+  console.log(`✅ Configuration validated (port: ${env.PORT}, assets: ${allowedAssets.join(", ")}, indexer interval: ${env.INDEXER_POLL_INTERVAL_MS}ms)`);
 
   return {
     port: env.PORT,
@@ -202,6 +210,6 @@ export function validateEnv(): ValidatedConfig {
     jwtSecret: env.JWT_SECRET,
     serverSigningKey: env.SERVER_SIGNING_KEY || null,
     domain: env.DOMAIN,
-
+    indexerPollIntervalMs: env.INDEXER_POLL_INTERVAL_MS,
   };
 }

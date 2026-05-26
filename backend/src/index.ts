@@ -941,7 +941,7 @@ async function startServer() {
 
   if (config.sorobanEnabled && config.contractId) {
     initIndexer(config.rpcUrl, config.contractId, config.networkPassphrase);
-    startIndexer(10000);
+    startIndexer(config.indexerPollIntervalMs);
     startReconciliationJob(
       Number(process.env.RECONCILIATION_INTERVAL_MS ?? 60000),
     );

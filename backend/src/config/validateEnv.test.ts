@@ -403,6 +403,60 @@ describe("validateEnv", () => {
       expect(config).toHaveProperty("jwtSecret");
       expect(config).toHaveProperty("serverSigningKey");
       expect(config).toHaveProperty("domain");
+      expect(config).toHaveProperty("indexerPollIntervalMs");
+    });
+
+    it("should use default INDEXER_POLL_INTERVAL_MS of 10000ms", () => {
+      process.env = {
+        SOROBAN_DISABLED: "true",
+      };
+
+      const config = validateEnv();
+
+      expect(config.indexerPollIntervalMs).toBe(10000);
+    });
+
+    it("should accept valid INDEXER_POLL_INTERVAL_MS", () => {
+      process.env = {
+        SOROBAN_DISABLED: "true",
+        INDEXER_POLL_INTERVAL_MS: "15000",
+      };
+
+      const config = validateEnv();
+
+      expect(config.indexerPollIntervalMs).toBe(15000);
+    });
+
+    it("should enforce minimum INDEXER_POLL_INTERVAL_MS of 5000ms", () => {
+      process.env = {
+        SOROBAN_DISABLED: "true",
+        INDEXER_POLL_INTERVAL_MS: "3000",
+      };
+
+      try {
+        validateEnv();
+      } catch (e) {}
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("INDEXER_POLL_INTERVAL_MS: must be a valid number >= 5000")
+      );
+    });
+
+    it("should reject invalid INDEXER_POLL_INTERVAL_MS", () => {
+      process.env = {
+        SOROBAN_DISABLED: "true",
+        INDEXER_POLL_INTERVAL_MS: "not-a-number",
+      };
+
+      try {
+        validateEnv();
+      } catch (e) {}
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("INDEXER_POLL_INTERVAL_MS: must be a valid number >= 5000")
+      );
     });
   });
 });
