@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Keypair, Networks, WebAuth } from "@stellar/stellar-sdk";
+import { Keypair, Networks, WebAuth, Transaction, Operation, Account, TransactionBuilder } from "@stellar/stellar-sdk";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 
 const TEST_JWT_SECRET = "test_jwt_secret_multisig";
 
@@ -13,27 +14,52 @@ const serverKeypair = Keypair.random();
 vi.stubEnv("SERVER_SIGNING_KEY", serverKeypair.secret());
 
 // Import after env stubs are in place
-const { verifyChallengeAndIssueToken, authMiddleware } = await import("./auth");
+// @ts-ignore: Top-level await is supported by Vitest
+const { verifyChallengeAndIssueToken, authMiddleware, generateChallenge } = await import("./auth");
 
-function buildSignedChallenge(clientKeypair: Keypair): string {
-  const challenge = WebAuth.buildChallengeTx(
-    serverKeypair,
-    clientKeypair.publicKey(),
-    "localhost",
-    300,
-    Networks.TESTNET,
-    "localhost",
-  );
-  // Sign the challenge with the client keypair
-  const { tx } = WebAuth.readChallengeTx(
-    challenge,
-    serverKeypair.publicKey(),
-    Networks.TESTNET,
-    "localhost",
-    "localhost",
-  );
-  tx.sign(clientKeypair);
+function signChallenge(challengeXdr: string, ...signers: Keypair[]): string {
+  // The challenge from generateChallenge is already signed by the server.
+  // We just need to add client signatures.
+  const tx = new Transaction(challengeXdr, Networks.TESTNET);
+  tx.sign(...signers);
   return tx.toEnvelope().toXDR("base64");
+}
+
+function modifyChallengeOps(challengeXdr: string, modifications: { timestamp?: number, nonce?: string, removeNonce?: boolean, removeTimestamp?: boolean }): string {
+  const originalTx = new Transaction(challengeXdr, Networks.TESTNET);
+  const serverAccount = new Account(serverKeypair.publicKey(), "-1");
+
+  const builder = new TransactionBuilder(serverAccount, {
+      fee: originalTx.fee,
+      networkPassphrase: originalTx.networkPassphrase,
+      timebounds: originalTx.timeBounds,
+  });
+
+  for (const op of originalTx.operations) {
+      if (op.type === 'manageData') {
+          if (op.name === 'timestamp') {
+              if (modifications.removeTimestamp) continue;
+              if (modifications.timestamp !== undefined) {
+                  builder.addOperation(Operation.manageData({ name: 'timestamp', value: modifications.timestamp.toString() }));
+                  continue;
+              }
+          }
+          if (op.name === 'nonce') {
+              if (modifications.removeNonce) continue;
+              if (modifications.nonce !== undefined) {
+                  builder.addOperation(Operation.manageData({ name: 'nonce', value: modifications.nonce }));
+                  continue;
+              }
+          }
+          builder.addOperation(Operation.manageData({ name: op.name, value: op.value as any, source: op.source }));
+      } else {
+          builder.addOperation(op as any);
+      }
+  }
+  
+  const newTx = builder.build();
+  newTx.sign(serverKeypair); // re-sign with server key
+  return newTx.toEnvelope().toXDR("base64");
 }
 
 describe("verifyChallengeAndIssueToken", () => {
@@ -52,7 +78,8 @@ describe("verifyChallengeAndIssueToken", () => {
       // Horizon fetch fails → falls back to single-signer
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
 
-      const signedTx = buildSignedChallenge(clientKeypair);
+      const challenge = generateChallenge(clientKeypair.publicKey());
+      const signedTx = signChallenge(challenge, clientKeypair);
       const token = await verifyChallengeAndIssueToken(signedTx);
 
       const decoded = jwt.verify(token, TEST_JWT_SECRET) as any;
@@ -73,7 +100,8 @@ describe("verifyChallengeAndIssueToken", () => {
         }),
       );
 
-      const signedTx = buildSignedChallenge(clientKeypair);
+      const challenge = generateChallenge(clientKeypair.publicKey());
+      const signedTx = signChallenge(challenge, clientKeypair);
       const token = await verifyChallengeAndIssueToken(signedTx);
 
       const decoded = jwt.verify(token, TEST_JWT_SECRET) as any;
@@ -103,24 +131,8 @@ describe("verifyChallengeAndIssueToken", () => {
         }),
       );
 
-      // Build challenge and sign with all three signers
-      const challenge = WebAuth.buildChallengeTx(
-        serverKeypair,
-        clientKeypair.publicKey(),
-        "localhost",
-        300,
-        Networks.TESTNET,
-        "localhost",
-      );
-      const { tx } = WebAuth.readChallengeTx(
-        challenge,
-        serverKeypair.publicKey(),
-        Networks.TESTNET,
-        "localhost",
-        "localhost",
-      );
-      tx.sign(clientKeypair, cosigner1, cosigner2);
-      const signedTx = tx.toEnvelope().toXDR("base64");
+      const challenge = generateChallenge(clientKeypair.publicKey());
+      const signedTx = signChallenge(challenge, clientKeypair, cosigner1, cosigner2);
 
       const token = await verifyChallengeAndIssueToken(signedTx);
       const decoded = jwt.verify(token, TEST_JWT_SECRET) as any;
@@ -147,23 +159,8 @@ describe("verifyChallengeAndIssueToken", () => {
         }),
       );
 
-      const challenge = WebAuth.buildChallengeTx(
-        serverKeypair,
-        clientKeypair.publicKey(),
-        "localhost",
-        300,
-        Networks.TESTNET,
-        "localhost",
-      );
-      const { tx } = WebAuth.readChallengeTx(
-        challenge,
-        serverKeypair.publicKey(),
-        Networks.TESTNET,
-        "localhost",
-        "localhost",
-      );
-      tx.sign(clientKeypair, cosigner1);
-      const signedTx = tx.toEnvelope().toXDR("base64");
+      const challenge = generateChallenge(clientKeypair.publicKey());
+      const signedTx = signChallenge(challenge, clientKeypair, cosigner1);
 
       const token = await verifyChallengeAndIssueToken(signedTx);
       const decoded = jwt.verify(token, TEST_JWT_SECRET) as any;
@@ -180,6 +177,104 @@ describe("verifyChallengeAndIssueToken", () => {
       await expect(verifyChallengeAndIssueToken("not-a-valid-tx")).rejects.toThrow(
         "Challenge verification failed",
       );
+    });
+  });
+
+  describe("replay attack prevention", () => {
+    beforeEach(() => {
+      // Mock Horizon to return single-signer account
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+    });
+
+    it("accepts fresh timestamp within tolerance", async () => {
+      const challenge = generateChallenge(clientKeypair.publicKey());
+      const signedTx = signChallenge(challenge, clientKeypair);
+      
+      const token = await verifyChallengeAndIssueToken(signedTx);
+      const decoded = jwt.verify(token, TEST_JWT_SECRET) as any;
+      expect(decoded.accountId).toBe(clientKeypair.publicKey());
+    });
+
+    it("rejects timestamp older than 60 seconds", async () => {
+      const oldTimestamp = Math.floor(Date.now() / 1000) - 61; // 61 seconds ago
+      let challenge = generateChallenge(clientKeypair.publicKey());
+      challenge = modifyChallengeOps(challenge, { timestamp: oldTimestamp });
+      const signedTx = signChallenge(challenge, clientKeypair);
+      
+      await expect(verifyChallengeAndIssueToken(signedTx)).rejects.toThrow(
+        "Challenge timestamp is too old or too far in the future"
+      );
+    });
+
+    it("rejects timestamp too far in the future", async () => {
+      const futureTimestamp = Math.floor(Date.now() / 1000) + 61; // 61 seconds in future
+      let challenge = generateChallenge(clientKeypair.publicKey());
+      challenge = modifyChallengeOps(challenge, { timestamp: futureTimestamp });
+      const signedTx = signChallenge(challenge, clientKeypair);
+      
+      await expect(verifyChallengeAndIssueToken(signedTx)).rejects.toThrow(
+        "Challenge timestamp is too old or too far in the future"
+      );
+    });
+
+    it("rejects replayed nonce", async () => {
+      const nonce = "replay_nonce_123";
+      let challenge1 = generateChallenge(clientKeypair.publicKey());
+      challenge1 = modifyChallengeOps(challenge1, { nonce });
+      const signedTx1 = signChallenge(challenge1, clientKeypair);
+      
+      const token1 = await verifyChallengeAndIssueToken(signedTx1);
+      expect(token1).toBeDefined();
+      
+      let challenge2 = generateChallenge(clientKeypair.publicKey());
+      challenge2 = modifyChallengeOps(challenge2, { nonce });
+      const signedTx2 = signChallenge(challenge2, clientKeypair);
+      await expect(verifyChallengeAndIssueToken(signedTx2)).rejects.toThrow(
+        "Challenge nonce has already been used (replay attack detected)"
+      );
+    });
+
+    it("rejects challenge without timestamp and nonce", async () => {
+      let challenge = generateChallenge(clientKeypair.publicKey());
+      challenge = modifyChallengeOps(challenge, { removeTimestamp: true, removeNonce: true });
+      const signedTx = signChallenge(challenge, clientKeypair);
+      
+      await expect(verifyChallengeAndIssueToken(signedTx)).rejects.toThrow(
+        "Challenge missing required timestamp and nonce"
+      );
+    });
+
+    it("rejects challenge with missing nonce", async () => {
+      let challenge = generateChallenge(clientKeypair.publicKey());
+      challenge = modifyChallengeOps(challenge, { removeNonce: true });
+      const signedTx = signChallenge(challenge, clientKeypair);
+      
+      await expect(verifyChallengeAndIssueToken(signedTx)).rejects.toThrow(
+        "Challenge missing required timestamp and nonce"
+      );
+    });
+  });
+
+  describe("generateChallenge", () => {
+    it("generates challenge with timestamp and nonce in manageData operations", () => {
+      const accountId = clientKeypair.publicKey();
+      const challenge = generateChallenge(accountId);
+      
+      const tx = new Transaction(challenge, Networks.TESTNET);
+      
+      const timestampOp = tx.operations.find(op => op.type === 'manageData' && op.name === 'timestamp') as Operation.ManageData;
+      const nonceOp = tx.operations.find(op => op.type === 'manageData' && op.name === 'nonce') as Operation.ManageData;
+
+      expect(timestampOp).toBeDefined();
+      expect(nonceOp).toBeDefined();
+      
+      const timestamp = parseInt(timestampOp.value!.toString('utf-8'), 10);
+      const nonce = nonceOp.value!.toString('utf-8');
+      
+      expect(nonce).toMatch(/^[a-f0-9]{32}$/);
+      
+      const now = Math.floor(Date.now() / 1000);
+      expect(Math.abs(now - timestamp)).toBeLessThan(5); // Should be very recent
     });
   });
 });

@@ -161,7 +161,6 @@ async function indexEvents(): Promise<void> {
     if (lastProcessedLedger === 0) {
 
       }
-    }
 
     if (currentLedger <= lastProcessedLedger) {
       circuitBreaker.onSuccess();

@@ -1,6 +1,8 @@
 import {
+  Account,
   Keypair,
   Networks,
+  Operation,
   TransactionBuilder,
   WebAuth,
 } from "@stellar/stellar-sdk";
@@ -18,6 +20,20 @@ const SERVER_SIGNING_KEY =
 
 const DOMAIN = (process.env.DOMAIN || "localhost").trim();
 const NETWORK_PASSPHRASE = process.env.NETWORK_PASSPHRASE || Networks.TESTNET;
+
+// Replay attack prevention
+const TIMESTAMP_TOLERANCE_SECONDS = 60; // 60 seconds tolerance
+const nonceStore = new Map<string, number>(); // nonce -> expiry timestamp
+
+// Clean up expired nonces every 5 minutes
+setInterval(() => {
+  const now = Math.floor(Date.now() / 1000);
+  for (const [nonce, expiry] of nonceStore.entries()) {
+    if (now > expiry) {
+      nonceStore.delete(nonce);
+    }
+  }
+}, 5 * 60 * 1000);
 
 let jwtSecret = process.env.JWT_SECRET;
 
@@ -85,22 +101,66 @@ async function fetchAccountSigners(
 
 export function generateChallenge(accountId: string): string {
   const serverKeypair = Keypair.fromSecret(SERVER_SIGNING_KEY);
+  
+  // Generate a unique nonce for this challenge
+  const nonce = crypto.randomBytes(16).toString('hex'); // Shorter nonce for manage data
+  const timestamp = Math.floor(Date.now() / 1000);
+  
+  // Create challenge transaction with timestamp and nonce in manage data operation
+  const transaction = new TransactionBuilder(
+    new Account(serverKeypair.publicKey(), "-1"),
+    {
+      fee: "100",
+      networkPassphrase: NETWORK_PASSPHRASE,
+      timebounds: {
+        minTime: 0,
+        maxTime: Math.floor(Date.now() / 1000) + 300, // 5 minutes
+      },
+    }
+  )
+    .addOperation(
+      Operation.manageData({
+        name: `${DOMAIN} auth`,
+        // SEP-10: value must be a 64-char base64 random string (48 random bytes)
+        value: crypto.randomBytes(48).toString("base64"),
+        source: accountId, // SEP-10: first op must have the client account as source
+      })
+    )
+    .addOperation(
+      Operation.manageData({
+        name: "web_auth_domain",
+        value: DOMAIN,
+        source: serverKeypair.publicKey(),
+      })
+    )
+    .addOperation(
+      Operation.manageData({
+        name: "timestamp",
+        value: timestamp.toString(),
+        source: serverKeypair.publicKey(),
+      })
+    )
+    .addOperation(
+      Operation.manageData({
+        name: "nonce",
+        value: nonce,
+        source: serverKeypair.publicKey(),
+      })
+    )
+    .build();
 
-  const challenge = WebAuth.buildChallengeTx(
-    serverKeypair,
-    accountId,
-    DOMAIN,
-    300, // Valid for 5 minutes
-    NETWORK_PASSPHRASE,
-    DOMAIN,
-  );
-
-  return challenge;
+  transaction.sign(serverKeypair);
+  return transaction.toEnvelope().toXDR("base64");
 }
 
 /**
  * Verifies a SEP-10 challenge transaction and issues a JWT.
  * Supports both standard single-signer accounts and M-of-N multisig accounts.
+ * 
+ * Includes replay attack prevention:
+ * - Validates timestamp is within 60 seconds of current time
+ * - Ensures nonce hasn't been used before
+ * - Stores nonce for 60 seconds to prevent replay
  *
  * For multisig accounts, fetches signers from Horizon and passes them all to
  * verifyChallengeTxSigners. The JWT payload includes signer_count and threshold.
@@ -110,6 +170,8 @@ export function generateChallenge(accountId: string): string {
  * - Transaction has expired (stale)
  * - Domain/Network doesn't match
  * - Client signature(s) are missing or invalid
+ * - Timestamp is too old or too far in the future
+ * - Nonce has been used before (replay attack)
  */
 export async function verifyChallengeAndIssueToken(
   transactionBase64: string,
@@ -119,13 +181,49 @@ export async function verifyChallengeAndIssueToken(
 
   try {
     // readChallengeTx validates the transaction structure and server signature
-    const { clientAccountID } = WebAuth.readChallengeTx(
+    const challengeTx = WebAuth.readChallengeTx(
       transactionBase64,
       serverAccountId,
       NETWORK_PASSPHRASE,
       DOMAIN,
       DOMAIN,
     );
+
+    const { clientAccountID, tx } = challengeTx;
+    const ops = tx.operations;
+
+    const timestampOp = ops.find(op => op.type === 'manageData' && op.name === 'timestamp') as Operation.ManageData | undefined;
+    const nonceOp = ops.find(op => op.type === 'manageData' && op.name === 'nonce') as Operation.ManageData | undefined;
+
+    // Validate timestamp and nonce for replay attack prevention
+    if (timestampOp?.value && nonceOp?.value) {
+      const timestampStr = timestampOp.value.toString('utf-8');
+      const nonce = nonceOp.value.toString('utf-8');
+      
+      if (!timestampStr || !nonce) {
+        throw new Error("Invalid challenge format: missing timestamp or nonce");
+      }
+
+      const timestamp = parseInt(timestampStr, 10);
+      const now = Math.floor(Date.now() / 1000);
+      const timeDiff = Math.abs(now - timestamp);
+      
+      // Check if timestamp is within tolerance
+      if (timeDiff > TIMESTAMP_TOLERANCE_SECONDS) {
+        throw new Error(`Challenge timestamp is too old or too far in the future (${timeDiff}s difference)`);
+      }
+
+      // Check if nonce has been used before (replay attack)
+      if (nonceStore.has(nonce)) {
+        throw new Error("Challenge nonce has already been used (replay attack detected)");
+      }
+
+      // Store nonce with expiry time to prevent replay
+      const expiryTime = now + TIMESTAMP_TOLERANCE_SECONDS;
+      nonceStore.set(nonce, expiryTime);
+    } else {
+      throw new Error("Challenge missing required timestamp and nonce");
+    }
 
     // Try to fetch account signers from Horizon to detect multisig accounts
     const accountInfo = await fetchAccountSigners(clientAccountID);

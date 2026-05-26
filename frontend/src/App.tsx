@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type RefObject } from "react";
 import { CreateStreamForm } from "./components/CreateStreamForm";
 import { EditStartTimeModal } from "./components/EditStartTimeModal";
 import { IssueBacklog } from "./components/IssueBacklog";
+import { OfflineBanner } from "./components/OfflineBanner";
 import { RecipientDashboard } from "./components/RecipientDashboard";
 import { SenderDashboard } from "./components/SenderDashboard";
 import { StreamDetailDrawer } from "./components/StreamDetailDrawer";
@@ -232,6 +233,8 @@ function App() {
           Recipient dashboard
         </button>
       </nav>
+
+      <OfflineBanner />
 
       {viewMode === "sender" ? (
         <SenderDashboard

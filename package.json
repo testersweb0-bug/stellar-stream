@@ -14,4 +14,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "conventional-changelog-cli": "^2.2.2"
+  }
+}
 
