@@ -116,7 +116,8 @@ export function CreateStreamForm({
 }: CreateStreamFormProps) {
   const [values, setValues, hasDraft, clearDraft] = useDraftAutosave<FormValues>(
     "stellar-stream:create-draft",
-    INITIAL_VALUES
+    INITIAL_VALUES,
+    2000 // Autosave every 2 seconds
   );
   const [allowedAssets, setAllowedAssets] = useState<string[]>([]);
   const [configFetchFailed, setConfigFetchFailed] = useState(false);
@@ -232,6 +233,32 @@ export function CreateStreamForm({
 
   return (
     <form onSubmit={handleSubmit} noValidate>
+      {hasDraft && (
+        <div
+          className="draft-recovery-banner"
+          role="status"
+          aria-live="polite"
+          aria-label="Draft recovered"
+        >
+          ✓ Your unsaved draft has been recovered. You can{" "}
+          <button
+            type="button"
+            className="draft-recovery-banner__discard-link"
+            onClick={() => {
+              if (window.confirm("Discard your unsaved stream draft?")) {
+                clearDraft();
+                setTouched({});
+                setSubmitAttempted(false);
+              }
+            }}
+            disabled={isSubmitting}
+          >
+            discard it
+          </button>{" "}
+          if you prefer to start over.
+        </div>
+      )}
+
       {parsedApiError && (
         <div className="api-error-box">
           <div className="api-error-box__title">{parsedApiError.title}</div>
@@ -533,22 +560,6 @@ export function CreateStreamForm({
         >
           {isSubmitting ? "Creating…" : "Create Stream"}
         </button>
-        {hasDraft && (
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={() => {
-              if (window.confirm("Discard your unsaved stream draft?")) {
-                clearDraft();
-                setTouched({});
-                setSubmitAttempted(false);
-              }
-            }}
-            disabled={isSubmitting}
-          >
-            Discard Draft
-          </button>
-        )}
       </div>
     </form>
   );

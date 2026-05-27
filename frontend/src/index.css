@@ -203,6 +203,43 @@ body {
   line-height: 1.5;
 }
 
+/* ── Draft recovery banner ────────────────────────────── */
+
+.draft-recovery-banner {
+  background: #f0fdf4;
+  border: 1.5px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  font-size: 0.88rem;
+  color: #166534;
+  line-height: 1.5;
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.draft-recovery-banner__discard-link {
+  background: none;
+  border: none;
+  color: #166534;
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0;
+  font: inherit;
+}
+
+.draft-recovery-banner__discard-link:hover:not(:disabled) {
+  color: #15803d;
+}
+
+.draft-recovery-banner__discard-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Global error banner (cancel failures, etc.) ───────── */
 
 .error-banner {
