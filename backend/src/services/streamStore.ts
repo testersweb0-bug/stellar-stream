@@ -15,6 +15,7 @@ import { initDb, getDb } from "./db";
 import { recordEventWithDb } from "./eventHistory";
 import { streamHasEvent } from "./eventHistory";
 import { triggerWebhook } from "./webhook";
+import { initCache, getCache } from "./cache";
 
 export type StreamStatus = "scheduled" | "active" | "paused" | "completed" | "canceled";
 
@@ -144,6 +145,7 @@ let serverKeypair: Keypair | null = null;
  */
 export async function initSoroban() {
   initDb();
+  initCache();
 
   const rpcUrl =
     process.env.RPC_URL || "https://soroban-testnet.stellar.org:443";
@@ -171,34 +173,19 @@ interface CacheEntry<T> {
   expiresAt: number;
 }
 
-const rpcCache = new Map<string, CacheEntry<any>>();
-
-function getCached<T>(key: string): T | null {
-  const entry = rpcCache.get(key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    rpcCache.delete(key);
-    return null;
-  }
-  return entry.data;
+async function getCached<T>(key: string): Promise<T | null> {
+  return getCache().get<T>(key);
 }
 
-function setCached<T>(key: string, data: T, ttlSeconds = 5): void {
-  rpcCache.set(key, {
-    data,
-    expiresAt: Date.now() + ttlSeconds * 1000,
-  });
+async function setCached<T>(key: string, data: T, ttlSeconds = 5): Promise<void> {
+  return getCache().set<T>(key, data, ttlSeconds);
 }
 
-function invalidateCache(pattern?: string): void {
+async function invalidateCache(pattern?: string): Promise<void> {
   if (!pattern) {
-    rpcCache.clear();
+    await getCache().clear();
   } else {
-    for (const key of rpcCache.keys()) {
-      if (key.includes(pattern)) {
-        rpcCache.delete(key);
-      }
-    }
+    await getCache().del(pattern);
   }
 }
 
@@ -300,7 +287,7 @@ async function fetchOnChainStreamRecord(
   id: number,
 ): Promise<StreamRecord | null> {
   const cacheKey = `stream:${id}`;
-  const cached = getCached<StreamRecord>(cacheKey);
+  const cached = await getCached<StreamRecord>(cacheKey);
   if (cached) {
     return cached;
   }
@@ -332,7 +319,7 @@ async function fetchOnChainStreamRecord(
     pausedDuration: Number(streamData.paused_duration ?? 0),
   };
 
-  setCached(cacheKey, result, 5);
+  await setCached(cacheKey, result, 5);
   return result;
 }
 
@@ -687,7 +674,7 @@ export async function createStream(input: StreamInput): Promise<StreamRecord> {
   })();
 
   // Invalidate cache to ensure freshness after stream creation
-  invalidateCache("stream:");
+  await invalidateCache("stream:");
 
   // Webhook fires after the transaction commits — a webhook failure
   // must never roll back an already-persisted stream.
@@ -932,7 +919,7 @@ export async function cancelStream(
   }
 
   // Invalidate cache
-  invalidateCache(`stream:${id}`);
+  await invalidateCache(`stream:${id}`);
 
   // Atomically write the updated stream row and the cancellation event.
   const db = getDb();
