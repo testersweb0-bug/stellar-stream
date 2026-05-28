@@ -41,6 +41,23 @@ jobs:
       - name: Check contract formatting
         run: cargo fmt --all -- --check
 
+        - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit (contracts)
+        working-directory: contracts
+        run: |
+          cargo audit --json > cargo-audit-report.json || true
+          cargo audit
+
+      - name: Upload cargo audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report
+          path: contracts/cargo-audit-report.json
+          retention-days: 30
+
       - name: Run contract tests
         env:
           RUSTFLAGS: "-D warnings"
