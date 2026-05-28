@@ -166,7 +166,6 @@ async function indexEvents(): Promise<void> {
         lastProcessedLedger = indexerStartLedger !== null ? indexerStartLedger : currentLedger - 1;
         db.prepare("INSERT INTO indexer_cursor (id, last_ledger_sequence) VALUES (1, ?)").run(lastProcessedLedger);
       }
-    }
 
     if (currentLedger <= lastProcessedLedger) {
       circuitBreaker.onSuccess();

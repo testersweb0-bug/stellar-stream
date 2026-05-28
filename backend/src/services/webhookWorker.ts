@@ -1,7 +1,7 @@
 import axios from "axios";
 import { getDb } from "./db";
 import { getRetryDelaySeconds } from "./webhook";
-import { getWebhookHeaders } from "./webhookSignature";
+
 
 
 let isProcessing = false;
@@ -14,6 +14,13 @@ export const processWebhookQueue = async () => {
   try {
     const url = process.env.WEBHOOK_DESTINATION_URL;
     if (!url) {
+      isProcessing = false;
+      return;
+    }
+
+    const urlValidation = validateWebhookUrl(url);
+    if (!urlValidation.valid) {
+      console.error(`[WebhookWorker] Skipping delivery: ${urlValidation.reason}.`);
       isProcessing = false;
       return;
     }

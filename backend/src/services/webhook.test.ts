@@ -1,11 +1,5 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { getRetryDelaySeconds, triggerWebhook, getDeadLetters } from "./webhook";
-import { initDb, getDb } from "./db";
-import fs from "fs";
-import path from "path";
-
-const TEST_DB_PATH = path.join(__dirname, "..", "..", "data", "webhook-test.db");
 
 describe("Webhook Retry Logic", () => {
     it("should return correct retry delays", () => {
@@ -33,6 +27,33 @@ describe("Webhook Retry Logic", () => {
     });
 });
 
+describe("Webhook URL validation", () => {
+    it("should accept valid https URLs", () => {
+        expect(validateWebhookUrl("https://example.com/webhook").valid).toBe(true);
+    });
+
+    it("should reject private IP URLs", () => {
+        const result = validateWebhookUrl("https://192.168.1.10/webhook");
+
+        expect(result.valid).toBe(false);
+        expect(result.reason).toContain("private");
+    });
+
+    it("should reject HTTP URLs", () => {
+        const result = validateWebhookUrl("http://example.com/webhook");
+
+        expect(result.valid).toBe(false);
+        expect(result.reason).toContain("https");
+    });
+
+    it("should reject data URIs", () => {
+        const result = validateWebhookUrl("data:text/plain,hello");
+
+        expect(result.valid).toBe(false);
+        expect(result.reason).toContain("https");
+    });
+});
+
 describe("Webhook triggerWebhook and getDeadLetters", () => {
     let originalEnvUrl: string | undefined;
 
@@ -46,7 +67,7 @@ describe("Webhook triggerWebhook and getDeadLetters", () => {
         db.exec("DELETE FROM streams");
 
         originalEnvUrl = process.env.WEBHOOK_DESTINATION_URL;
-        process.env.WEBHOOK_DESTINATION_URL = "http://example.com/webhook";
+        process.env.WEBHOOK_DESTINATION_URL = "https://example.com/webhook";
         
         vi.spyOn(console, 'log').mockImplementation(() => {});
         vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -91,6 +112,18 @@ describe("Webhook triggerWebhook and getDeadLetters", () => {
         
         expect(count.c).toBe(0);
         expect(console.log).toHaveBeenCalledWith(expect.stringContaining("WEBHOOK_DESTINATION_URL not set"));
+    });
+
+    it("should early return when WEBHOOK_DESTINATION_URL is not allowed", async () => {
+        process.env.WEBHOOK_DESTINATION_URL = "https://10.0.0.5/webhook";
+
+        await triggerWebhook("test_event", { stream_id: "stream-123" });
+
+        const db = getDb();
+        const count = db.prepare("SELECT count(*) as c FROM webhook_deliveries").get() as any;
+
+        expect(count.c).toBe(0);
+        expect(console.error).toHaveBeenCalledWith(expect.stringContaining("private"));
     });
 
     it("should early return and log error when stream_id is missing from data", async () => {

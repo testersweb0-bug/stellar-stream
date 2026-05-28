@@ -66,6 +66,38 @@ describe("Webhook Registration Schema", () => {
         expect(result.error?.issues[0].message).toContain("https");
     });
 
+    it("should reject private IP URLs", () => {
+        const payload = {
+            url: "https://10.0.0.5/webhooks",
+            events: ["created"],
+        };
+
+        const result = webhookRegistrationSchema.safeParse(payload);
+        expect(result.success).toBe(false);
+        expect(result.error?.issues[0].message).toContain("private");
+    });
+
+    it("should reject localhost URLs", () => {
+        const payload = {
+            url: "https://localhost/webhooks",
+            events: ["created"],
+        };
+
+        const result = webhookRegistrationSchema.safeParse(payload);
+        expect(result.success).toBe(false);
+        expect(result.error?.issues[0].message).toContain("localhost");
+    });
+
+    it("should reject data URIs", () => {
+        const payload = {
+            url: "data:text/plain,hello",
+            events: ["created"],
+        };
+
+        const result = webhookRegistrationSchema.safeParse(payload);
+        expect(result.success).toBe(false);
+    });
+
     it("should reject empty events array", () => {
         const payload = {
             url: "https://example.com/webhooks",

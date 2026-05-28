@@ -1,5 +1,8 @@
 import { createHmac } from "crypto";
 import { getDb } from "./db";
+import { validateWebhookUrl } from "./webhookUrl";
+
+export { validateWebhookUrl } from "./webhookUrl";
 
 export function computeSignature(secret: string, body: string): string {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -13,6 +16,12 @@ export const triggerWebhook = async (event: string, data: any): Promise<void> =>
 
   if (!url) {
     console.log(`[Webhook] Skipping ${event}: WEBHOOK_DESTINATION_URL not set.`);
+    return;
+  }
+
+  const urlValidation = validateWebhookUrl(url);
+  if (!urlValidation.valid) {
+    console.error(`[Webhook] Skipping ${event}: ${urlValidation.reason}.`);
     return;
   }
 

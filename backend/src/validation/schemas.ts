@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { StrKey } from "@stellar/stellar-sdk";
+import { validateWebhookUrl } from "../services/webhookUrl";
 
 export const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
 export const ASSET_CODE_REGEX = /^[A-Za-z0-9]{1,12}$/;
@@ -90,7 +91,15 @@ export const webhookRegistrationSchema = z.object({
   url: z
     .string()
     .url("url must be a valid URL")
-    .refine((url) => url.startsWith("https://"), "url must use https:// protocol"),
+    .superRefine((url, ctx) => {
+      const validation = validateWebhookUrl(url);
+      if (!validation.valid) {
+        ctx.addIssue({
+          code: "custom",
+          message: validation.reason ?? "url is not allowed",
+        });
+      }
+    }),
   events: z
     .array(z.string())
     .min(1, "events must be a non-empty array")
