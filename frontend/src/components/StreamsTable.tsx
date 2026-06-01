@@ -32,6 +32,10 @@ interface StreamsTableProps {
   onResume: (streamId: string) => Promise<void>;
   onOpenStream?: (streamId: string) => void;
   onEditStartTime: (stream: Stream, triggerRef: RefObject<HTMLButtonElement | null>) => void;
+  // Optional props expected by App.tsx
+  totalStreamCount?: number;
+  onCreateStream?: () => void;
+
 }
 
 const SKELETON_ROW_COUNT = 6;
@@ -102,7 +106,7 @@ export function StreamsTable({
   const [isBulkCanceling, setIsBulkCanceling] = useState(false);
   const [bulkCancelProgress, setBulkCancelProgress] = useState({ current: 0, total: 0 });
 
-  const exportUrl = useMemo(() => getExportCsvUrl(filters), [filters]);
+  const exportUrl = useMemo(() => getExportCsvUrl(filters as Record<string, string>), [filters]);
 
   const sortedStreams = useMemo(
     () => [...streams].sort((a, b) => a.id.localeCompare(b.id)),
@@ -165,7 +169,8 @@ export function StreamsTable({
 
   const toggleTimeline = useCallback((id: string) => {
     setExpandedStreamId((prev) => (prev === id ? null : id));
-  }, []);
+    onOpenStream?.(id);
+  }, [onOpenStream]);
 
   const handleBulkCancel = useCallback(async () => {
     const idsToCancel = Array.from(selectedStreamIds);
@@ -556,7 +561,6 @@ const StreamRow = memo(function StreamRow({
             aria-controls={`timeline-${stream.id}`}
             onClick={() => {
               onToggleTimeline(stream.id);
-              onOpenStream?.(stream.id);
             }}
             title={isExpanded ? "Hide timeline" : "Show timeline"}
           >

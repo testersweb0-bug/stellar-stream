@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type RefObject } from "react";
+﻿import { useEffect, useMemo, useState, useCallback, type RefObject } from "react";
 import { CreateStreamForm } from "./components/CreateStreamForm";
 import { EditStartTimeModal } from "./components/EditStartTimeModal";
 import { IssueBacklog } from "./components/IssueBacklog";
@@ -32,7 +32,9 @@ type ViewMode = "dashboard" | "recipient" | "sender";
 
 function App() {
   const wallet = useFreighter();
-
+  const { showToast } = useToast();
+  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
+  const [detailStreamId, setDetailStreamId] = useState<string | null>(null);
   const [streams, setStreams] = useState<Stream[]>([]);
   const [issues, setIssues] = useState<OpenIssue[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
@@ -42,68 +44,87 @@ function App() {
   } | null>(null);
   const [loadingDashboard, setLoadingDashboard] = useState(true);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [totalUnfilteredCount, setTotalUnfilteredCount] = useState<number>(0);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const CREATE_STREAM_SECTION_ID = "create-stream-section";
 
+  const scrollToCreateStream = useCallback(() => {
+    document.getElementById(CREATE_STREAM_SECTION_ID)?.scrollIntoView({ behavior: "smooth" });
+  }, []);
 
-  const metrics = useMemo(() => {
-    const activeCount = filteredStreams.filter(
-      (s) => s.progress.status === "active",
-    ).length;
-    const completedCount = filteredStreams.filter(
-      (s) => s.progress.status === "completed",
-    ).length;
-    const totalVested = filteredStreams.reduce(
-      (sum, s) => sum + s.progress.vestedAmount,
-      0,
-    );
-    return {
-      total: filteredStreams.length,
-      active: activeCount,
-      completed: completedCount,
-      vested: Number(totalVested.toFixed(2)),
-    };
-  }, [filteredStreams]);
-
-  const metricsHistory = useMetricsHistory(
-    metrics.active,
-    metrics.completed,
-    metrics.vested,
-    5000,
-  );
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const rawView = params.get("view");
-    const rawStreamId = params.get("streamId");
-    if (rawView === "dashboard" || rawView === "sender" || rawView === "recipient") {
-      setViewMode(rawView);
-    }
-    setDetailStreamId(rawStreamId);
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => (current === "light" ? "dark" : "light"));
   }, []);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (viewMode === "dashboard") {
-      params.delete("view");
-    } else {
-      params.set("view", viewMode);
-    }
-    if (detailStreamId) {
-      params.set("streamId", detailStreamId);
-    } else {
-      params.delete("streamId");
-    }
-    const next = params.toString();
-    window.history.replaceState(
-      null,
-      "",
-      next ? `${window.location.pathname}?${next}` : window.location.pathname,
-    );
-  }, [detailStreamId, viewMode]);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  const { filters, filteredStreams, setFilter } = useStreamFilter(streams);
+  const wsUrl = import.meta.env.VITE_WS_URL ?? "";
+  const { lastMessage } = useWebSocket<{
+    eventType?: string;
+    type?: string;
+    status?: string;
+    streamId?: string;
+  }>(wsUrl);
+
+  const { data: metricsHistory } = useMetricsHistory("7d");
+
+  const metrics = useMemo(
+    () => {
+      const active = streams.filter((stream) => stream.progress.status === "active").length;
+      const completed = streams.filter((stream) => stream.progress.status === "completed").length;
+      const vested = streams.reduce((sum, stream) => sum + stream.progress.vestedAmount, 0);
+
+      return {
+        total: totalUnfilteredCount,
+        active,
+        completed,
+        vested,
+      };
+    },
+    [streams, totalUnfilteredCount],
+  );
+
+  const apiFilters: ListStreamsFilters = useMemo(
+    () => ({
+      status: filters.status,
+      sender: filters.sender,
+      recipient: filters.recipient,
+      asset: filters.assetCode,
+    }),
+    [filters],
+  );
+
+  const tableFilters: ListStreamsFilters = useMemo(
+    () => ({
+      status: filters.status,
+      sender: filters.sender,
+      recipient: filters.recipient,
+      asset: filters.assetCode,
+      q: "",
+    }),
+    [filters],
+  );
 
   async function refreshStreams(currentFilters: ListStreamsFilters): Promise<void> {
     const data = await listStreams(currentFilters);
     setStreams(data);
   }
+
+  async function refreshUnfilteredCount(): Promise<void> {
+    try {
+      const all = await listStreams();
+      setTotalUnfilteredCount(all.length);
+    } catch {
+      // Ignore count errors; feature is best-effort.
+    }
+  }
+
+  useEffect(() => {
+    void refreshUnfilteredCount();
+  }, []);
 
   useEffect(() => {
     setLoadingDashboard(true);
@@ -139,7 +160,9 @@ function App() {
     } else if (eventKind.includes("complete")) {
       showToast("Stream completed", "success");
     }
-    refreshStreams(apiFilters).catch(() => undefined);
+
+    void refreshStreams(apiFilters);
+    void refreshUnfilteredCount();
   }, [apiFilters, lastMessage, showToast]);
 
   async function handleCreate(
@@ -149,6 +172,7 @@ function App() {
     try {
       await createStream(payload);
       await refreshStreams(apiFilters);
+      void refreshUnfilteredCount();
       showToast("Stream created successfully", "success");
     } catch (err) {
       if (err instanceof ApiError) {
@@ -166,10 +190,12 @@ function App() {
     try {
       await cancelStream(streamId);
       await refreshStreams(apiFilters);
+      void refreshUnfilteredCount();
       showToast("Stream canceled", "info");
     } catch (err) {
       if (err instanceof ApiError) {
         showToast(`Cancel failed (${err.statusCode}): ${err.message}`, "error");
+        void refreshUnfilteredCount();
         return;
       }
       showToast(
@@ -179,7 +205,54 @@ function App() {
     }
   }
 
+  async function handlePause(streamId: string): Promise<void> {
+    try {
+      await pauseStream(streamId);
+      await refreshStreams(apiFilters);
+      void refreshUnfilteredCount();
+      showToast("Stream paused", "info");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        showToast(`Pause failed (${err.statusCode}): ${err.message}`, "error");
+        return;
+      }
+      showToast(err instanceof Error ? err.message : "Failed to pause the stream.", "error");
+    }
+  }
 
+  async function handleResume(streamId: string): Promise<void> {
+    try {
+      await resumeStream(streamId);
+      await refreshStreams(apiFilters);
+      void refreshUnfilteredCount();
+      showToast("Stream resumed", "success");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        showToast(`Resume failed (${err.statusCode}): ${err.message}`, "error");
+        return;
+      }
+      showToast(err instanceof Error ? err.message : "Failed to resume the stream.", "error");
+    }
+  }
+
+  async function handleUpdateStartTime(streamId: string, nextStartAt: number) {
+    try {
+      await updateStreamStartAt(streamId, nextStartAt);
+      await refreshStreams(apiFilters);
+      showToast("Start time updated", "success");
+    } catch (err) {
+      if (err instanceof ApiError) {
+        showToast(`Update failed (${err.statusCode}): ${err.message}`, "error");
+        void refreshUnfilteredCount();
+        return;
+      }
+      showToast("Failed to update stream start time", "error");
+    }
+  }
+
+  if (initialLoading && viewMode === "dashboard") {
+    return <div className="app-shell">Loading dashboard…</div>;
+  }
 
   return (
     <div className="app-shell">
@@ -189,18 +262,16 @@ function App() {
             <p className="eyebrow">Soroban-native MVP</p>
             <h1>StellarStream</h1>
           </div>
-          
-          {/* ── ISSUE #159: Theme Toggle Button ── */}
-          <button 
-            type="button" 
-            className="btn-ghost" 
+
+          <button
+            type="button"
+            className="btn-ghost"
             onClick={toggleTheme}
-            style={{ marginRight: '0.5rem', fontSize: '1.2rem', minHeight: '36px', display: 'flex', alignItems: 'center' }}
+            style={{ marginRight: "0.5rem", fontSize: "1.2rem", minHeight: "36px", display: "flex", alignItems: "center" }}
             aria-label="Toggle Dark Mode"
           >
-            {theme === 'light' ? '🌙' : '☀️'}
+            {theme === "light" ? "🌙" : "☀️"}
           </button>
-          {/* ───────────────────────────────────── */}
 
           <WalletButton wallet={wallet} />
         </div>
@@ -272,14 +343,18 @@ function App() {
           </section>
 
           <section className="layout-grid">
-            <CreateStreamForm
-              onCreate={handleCreate}
-              apiError={formError}
-              walletAddress={wallet.address}
-            />
+            <div id={CREATE_STREAM_SECTION_ID}>
+              <CreateStreamForm
+                onCreate={handleCreate}
+                apiError={formError}
+                walletAddress={wallet.address}
+              />
+            </div>
             <StreamsTable
               streams={filteredStreams}
               filters={tableFilters}
+              totalStreamCount={totalUnfilteredCount}
+              onCreateStream={scrollToCreateStream}
               onFiltersChange={(next) => {
                 setFilter("status", next.status ?? defaultStreamFilters.status);
                 setFilter("sender", next.sender ?? defaultStreamFilters.sender);

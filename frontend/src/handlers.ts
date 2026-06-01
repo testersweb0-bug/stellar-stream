@@ -66,4 +66,10 @@ export const handlers = [
       ],
     });
   }),
+  // App configuration used by CreateStreamForm and other components in tests
+  http.get('/api/config', () => {
+    return HttpResponse.json({
+      allowedAssets: ['USDC', 'XLM'],
+    });
+  }),
 ];
