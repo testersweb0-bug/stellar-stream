@@ -21,6 +21,11 @@ interface CreateStreamFormProps {
   walletAddress?: string | null;
 }
 
+/**
+ * Converts raw API error messages into user-friendly titles and hints.
+ * @param raw - The raw error message from the API.
+ * @returns An object containing a friendly title and hint.
+ */
 interface FeePreview {
   payload: CreateStreamPayload;
   estimate: StreamFeeEstimate;
@@ -54,7 +59,7 @@ function humaniseApiError(raw: string): { title: string; hint: string } {
   if (lower.includes("duration") || lower.includes("seconds")) {
     return {
       title: "Invalid duration",
-      hint: "Stream duration must be at least 1 hour (3 600 seconds). Increase the duration and try again.",
+      hint: "Stream duration must be at least 1 minute (60 seconds). Increase the duration and try again.",
     };
   }
   if (lower.includes("not found")) {
@@ -73,6 +78,11 @@ function humaniseApiError(raw: string): { title: string; hint: string } {
   return { title: "Something went wrong", hint: raw };
 }
 
+/**
+ * Displays a validation hint for a Stellar account ID.
+ * @param props - The component props containing the account address.
+ * @returns The rendered AccountHint component.
+ */
 function AccountHint({ value }: { value: string }) {
   const trimmed = value.trim();
   if (trimmed.length === 0) return null;
@@ -118,6 +128,13 @@ const INITIAL_VALUES: FormValues = {
 // Initial fallback if fetch hasn't completed or failed
 const DEFAULT_ALLOWED_ASSETS = ["USDC", "XLM"];
 
+/**
+ * Form component for creating a new payment stream.
+ * Includes validation, draft autosave, and estimated end date calculation.
+ * 
+ * @param props - The component props.
+ * @returns The rendered CreateStreamForm component.
+ */
 function buildCreateStreamPayload(values: FormValues): CreateStreamPayload {
   const now = Math.floor(Date.now() / 1000);
   const offsetMinutes = Number(values.startInMinutes);
@@ -527,6 +544,12 @@ export function CreateStreamForm({
           )}
         </div>
       </div>
+
+      {estimatedEndLabel && (
+        <div className="field-hint" style={{ marginTop: "-0.5rem", marginBottom: "1rem", color: "var(--color-success-text, #2e7d32)", fontWeight: 500 }}>
+          {estimatedEndLabel}
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: "1rem", alignItems: "center", marginTop: "1rem" }}>
         {simulationError && (
