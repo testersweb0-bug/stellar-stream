@@ -506,22 +506,22 @@ describe("POST /api/streams", () => {
     );
   });
 
-  it("returns 400 when durationSeconds is below the minimum", async () => {
-    const response = await request(app)
-      .post("/api/streams")
-      .set("Authorization", "Bearer mock_token")
-      .send({
-        sender: SENDER_A,
-        recipient: RECIPIENT_1,
-        assetCode: "USDC",
-        totalAmount: 100,
-        durationSeconds: 59,
-      });
+it("returns 400 when durationSeconds is zero", async () => {
+     const response = await request(app)
+       .post("/api/streams")
+       .set("Authorization", "Bearer mock_token")
+       .send({
+         sender: SENDER_A,
+         recipient: RECIPIENT_1,
+         assetCode: "USDC",
+         totalAmount: 100,
+         durationSeconds: 0,
+       });
 
-    expect(response.status).toBe(400);
-    expect(response.body.code).toBe("VALIDATION_ERROR");
-    expect(response.body.error).toContain("durationSeconds must be at least 60 seconds");
-  });
+     expect(response.status).toBe(400);
+     expect(response.body.code).toBe("VALIDATION_ERROR");
+     expect(response.body.error).toContain("durationSeconds must be at least 1 second");
+   });
 
   it("returns 400 when assetCode is not allowed", async () => {
     const response = await request(app)
